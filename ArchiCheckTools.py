@@ -7,9 +7,9 @@ from bpy.types import Operator, Panel
 from bpy.props import StringProperty, FloatProperty
 
 bl_info = {
-    "name": "建筑模型检修工具1.3",
+    "name": "建筑模型检修工具1.4",
     "author": "蒲贇涛",
-    "version": (1, 3),
+    "version": (1, 4),
     "blender": (4, 4, 0),
     "location": "3D视图 > 工具面板",
     "description": "https://github.com/Tomprinter/ArchiCheckTools_BlenderAddon",
@@ -24,7 +24,7 @@ def clear_scene_data(purge_orphans=True):
     bpy.ops.object.delete(use_global=True)
     
     # 清理残留数据
-    for data_type in ('meshes', 'materials', 'textures', 'images'):
+    for data_type in ('meshes', 'materials', 'textures', 'images','collections'):
         data_collection = getattr(bpy.data, data_type)
         for item in data_collection:
             try:
@@ -87,7 +87,7 @@ class BASE_OT_ImportFBX(Operator):
     bl_label = "导入FBX"
     bl_options = {'REGISTER', 'UNDO'}
     
-    filepath: StringProperty(subtype='FILE_PATH')
+    filepath: StringProperty(subtype='FILe_path_TEX')
     
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
@@ -153,8 +153,8 @@ class UVTOOLS_OT_BatchProcess(Operator):
 
     def execute(self, context):
         scene = context.scene
-        A_FOLDER = bpy.path.abspath(scene.a_folder)
-        B_FOLDER = bpy.path.abspath(scene.b_folder)
+        a_folder_UV = bpy.path.abspath(scene.a_folder_UV)
+        b_folder_UV = bpy.path.abspath(scene.b_folder_UV)
 
         def process_single_fbx(fbx_path):
             clear_scene_data(purge_orphans=False)
@@ -199,7 +199,7 @@ class UVTOOLS_OT_BatchProcess(Operator):
                     bpy.ops.object.mode_set(mode='OBJECT')
 
                 if success_count > 0:
-                    output_path = os.path.join(B_FOLDER, f"{base_name}.fbx")
+                    output_path = os.path.join(b_folder_UV, f"{base_name}.fbx")
                     bpy.ops.export_scene.fbx(
                         filepath=output_path,
                         path_mode='COPY', 
@@ -213,12 +213,12 @@ class UVTOOLS_OT_BatchProcess(Operator):
                 clear_scene_data()
             return False
 
-        if not os.path.isdir(A_FOLDER):
-            self.report({'ERROR'}, f"无效输入路径: {A_FOLDER}")
+        if not os.path.isdir(a_folder_UV):
+            self.report({'ERROR'}, f"无效输入路径: {a_folder_UV}")
             return {'CANCELLED'}
 
-        os.makedirs(B_FOLDER, exist_ok=True)
-        fbx_files = [f for f in os.listdir(A_FOLDER) if f.lower().endswith('.fbx')]
+        os.makedirs(b_folder_UV, exist_ok=True)
+        fbx_files = [f for f in os.listdir(a_folder_UV) if f.lower().endswith('.fbx')]
         
         if not fbx_files:
             self.report({'ERROR'}, "没有找到FBX文件")
@@ -226,7 +226,7 @@ class UVTOOLS_OT_BatchProcess(Operator):
 
         success = 0
         for fbx in fbx_files:
-            if process_single_fbx(os.path.join(A_FOLDER, fbx)):
+            if process_single_fbx(os.path.join(a_folder_UV, fbx)):
                 success += 1
 
         self.report({'INFO'}, f"完成! 成功处理 {success}/{len(fbx_files)} 个文件")
@@ -245,8 +245,8 @@ class UVTOOLS_PT_Panel(Panel):
         scene = context.scene
         
         box = layout.box()
-        box.prop(scene, "a_folder", text="输入目录")
-        box.prop(scene, "b_folder", text="输出目录")
+        box.prop(scene, "a_folder_UV", text="输入目录")
+        box.prop(scene, "b_folder_UV", text="输出目录")
         
         box = layout.box()
         box.prop(scene, "target_material_name", text="目标材质")
@@ -261,7 +261,19 @@ class TEXTURE_OT_ConnectTextures(Operator):
     bl_description = "自动连接BaseColor/Metallic/Roughness/Normal贴图"
 
     def execute(self, context):
-        def connect_textures(c_path):
+        scene = context.scene
+        # 根据复选框状态过滤要处理的贴图类型
+        texture_types = []
+        if scene.connect_basecolor:
+            texture_types.append(('BaseColor', 'Base Color', False, True))
+        if scene.connect_metallic:
+            texture_types.append(('Metallic', 'Metallic', False, False))
+        if scene.connect_roughness:
+            texture_types.append(('Roughness', 'Roughness', False, False)) 
+        if scene.connect_normal:
+            texture_types.append(('Normal', 'Normal', True, False))
+
+        def connect_textures(c_path_TEX):
             valid_ext = {'.png', '.jpg', '.jpeg', '.tga', '.tif', '.tiff'}
             for mat in bpy.data.materials:
                 if not mat.use_nodes:
@@ -273,12 +285,7 @@ class TEXTURE_OT_ConnectTextures(Operator):
                     continue
 
                 # 新增BaseColor处理
-                for suffix, input_name, is_normal, is_color in [
-                    ('BaseColor', 'Base Color', False, True),  # 新增项
-                    ('Metallic', 'Metallic', False, False),
-                    ('Roughness', 'Roughness', False, False),
-                    ('Normal', 'Normal', True, False)
-                ]:
+                for suffix, input_name, is_normal, is_color in texture_types:  # 使用动态列表
                     tex_path = None
                     base_name = f"{mat.name}_{suffix}"
                     
@@ -290,14 +297,14 @@ class TEXTURE_OT_ConnectTextures(Operator):
                     ]
                     
                     # 扫描匹配文件
-                    for f in os.listdir(c_path):
+                    for f in os.listdir(c_path_TEX):
                         fname, fext = os.path.splitext(f)
                         if fext.lower() not in valid_ext:
                             continue
                             
                         # 检查所有可能的命名变体
                         if any(fname.startswith(variant) for variant in naming_variants):
-                            tex_path = os.path.join(c_path, f)
+                            tex_path = os.path.join(c_path_TEX, f)
                             break
                     
                     if tex_path:
@@ -338,16 +345,143 @@ class TEXTURE_OT_ConnectTextures(Operator):
                                             principled.location.y + offset_y)
 
         try:
-            connect_textures(bpy.path.abspath(context.scene.c_path))
+            connect_textures(bpy.path.abspath(context.scene.c_path_TEX))
             self.report({'INFO'}, "贴图连接完成!")
             return {'FINISHED'}
         except Exception as e:
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
 
+# ==================== 贴图断开功能 ====================
+class TEXTURE_OT_DisconnectTextures(Operator):
+    bl_idname = "texture.disconnect_textures"
+    bl_label = "断连材质贴图"
+    bl_description = "断开指定类型的贴图连接并调整法线强度"
+    
+    def process_single_fbx(self, input_path, output_dir, context):
+        try:
+            clear_scene_data(purge_orphans=False)
+            # 导入FBX
+            bpy.ops.import_scene.fbx(filepath=input_path)
+            
+            # 处理所有材质
+            for mat in bpy.data.materials:
+                if not mat.use_nodes:
+                    continue
+                
+                nodes = mat.node_tree.nodes
+                links = mat.node_tree.links
+                principled = next((n for n in nodes if isinstance(n, bpy.types.ShaderNodeBsdfPrincipled)), None)
+                if not principled:
+                    continue
+
+                # 处理各贴图类型
+                if context.scene.disconnect_basecolor:
+                    self.disconnect_socket(principled, 'Base Color', nodes, links)
+                if context.scene.disconnect_metallic:
+                    self.disconnect_socket(principled, 'Metallic', nodes, links)
+                if context.scene.disconnect_roughness:
+                    self.disconnect_socket(principled, 'Roughness', nodes, links)
+                if context.scene.disconnect_normal:
+                    self.disconnect_socket(principled, 'Normal', nodes, links)
+                if context.scene.disconnect_alpha:
+                    self.disconnect_socket(principled, 'Alpha', nodes, links)
+                    principled.inputs['Alpha'].default_value = 1.0
+
+
+            # 导出处理后的FBX
+            output_path = os.path.join(output_dir, os.path.basename(input_path))
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            bpy.ops.export_scene.fbx(
+                filepath=output_path,
+                path_mode='COPY',
+                embed_textures=True
+            )
+            return True
+        except Exception as e:
+            self.report({'ERROR'}, f"处理 {input_path} 失败: {str(e)}")
+            return False
+        finally:
+            clear_scene_data()
+
+    def disconnect_socket(self, principled, socket_name, nodes, links):
+        """断开指定插槽的连接并清理节点"""
+        socket = principled.inputs.get(socket_name)
+        if not socket:
+            return
+        
+            
+        
+        # 通用节点链处理
+        visited_nodes = set()
+        stack = []
+        
+        # 初始化栈
+        if socket.is_linked:
+            initial_node = socket.links[0].from_node
+            stack.append(initial_node)
+
+        # 深度优先遍历节点链
+        while stack:
+            current_node = stack.pop()
+            if current_node in visited_nodes:
+                continue
+            visited_nodes.add(current_node)
+
+            # 收集上游节点
+            for input_socket in current_node.inputs:
+                for link in input_socket.links:
+                    upstream_node = link.from_node
+                    if upstream_node not in visited_nodes:
+                        stack.append(upstream_node)
+
+            # 安全移除节点
+            try:
+                # 断开所有输出连接
+                for output_socket in current_node.outputs:
+                    for link in output_socket.links:
+                        links.remove(link)
+                
+                # 移除节点
+                if current_node in nodes:
+                    nodes.remove(current_node)
+            except Exception as e:
+                print(f"移除节点时出错: {str(e)}")
+
+        # 确保最终断开目标插槽
+        while socket.links:
+            links.remove(socket.links[0])
+
+    def execute(self, context):
+        input_dir = bpy.path.abspath(context.scene.d_path_TEX)
+        output_dir = bpy.path.abspath(context.scene.e_path_TEX)
+        
+        if not os.path.isdir(input_dir):
+            self.report({'ERROR'}, "无效输入路径")
+            return {'CANCELLED'}
+        
+        processed_count = 0
+        error_count = 0
+        
+        # 遍历所有子目录中的FBX文件
+        for root, dirs, files in os.walk(input_dir):
+            for file in files:
+                if file.lower().endswith('.fbx'):
+                    input_path = os.path.join(root, file)
+                    # 保持目录结构
+                    relative_path_TEX = os.path.relpath(root, input_dir)
+                    output_subdir = os.path.join(output_dir, relative_path_TEX)
+                    
+                    if self.process_single_fbx(input_path, output_subdir, context):
+                        processed_count += 1
+                    else:
+                        error_count += 1
+        
+        self.report({'INFO'}, f"处理完成! 成功: {processed_count}, 失败: {error_count}")
+        return {'FINISHED'}
 
 class TEXTURE_PT_Panel(Panel):
-    bl_label = "2.贴图查找"
+    bl_label = "2.贴图工具"
     bl_idname = "VIEW3D_PT_texture_tools"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -360,11 +494,38 @@ class TEXTURE_PT_Panel(Panel):
         
         box = layout.box()
         box.label(text="贴图路径设置", icon='TEXTURE')
-        box.prop(scene, "c_path", text="贴图目录")
+        box.prop(scene, "c_path_TEX", text="贴图目录")
         
-        # 操作按钮列
-        col = box.column(align=True)
-        col.operator("texture.connect_textures", icon='MATERIAL')
+        # 添加贴图类型选择
+        box = layout.box()
+        box.label(text="选择贴图类型", icon='CHECKBOX_HLT')
+        row = box.row()
+        row.prop(scene, "connect_basecolor", text="BaseColor", toggle=True)
+        row.prop(scene, "connect_metallic", text="Metallic", toggle=True)
+        row = box.row()
+        row.prop(scene, "connect_roughness", text="Roughness", toggle=True)
+        row.prop(scene, "connect_normal", text="Normal", toggle=True)
+        
+        box.operator("texture.connect_textures", icon='MATERIAL')
+
+        # 新增断连贴图部分
+        box = layout.box()
+        box.label(text="断开贴图连接", icon='MATERIAL')
+        box.prop(scene, "d_path_TEX", text="输入目录")
+        box.prop(scene, "e_path_TEX", text="输出目录")
+        
+        box = layout.box()
+        box.label(text="选择断开类型", icon='CHECKBOX_HLT')
+        row = box.row()
+        row.prop(scene, "disconnect_basecolor", text="BaseColor", toggle=True)
+        row.prop(scene, "disconnect_metallic", text="Metallic", toggle=True)
+        row = box.row()
+        row.prop(scene, "disconnect_roughness", text="Roughness", toggle=True)
+        row.prop(scene, "disconnect_normal", text="Normal", toggle=True)
+        row = box.row()
+        row.prop(scene, "disconnect_alpha", text="Alpha", toggle=True)
+        
+        box.operator("texture.disconnect_textures", icon='MATERIAL')
 
 # ==================== 3. 材质处理工具 ====================
 class MATERIAL_OT_ProcessMaterials(Operator):
@@ -372,15 +533,15 @@ class MATERIAL_OT_ProcessMaterials(Operator):
     bl_label = "处理材质和法线"
 
     def execute(self, context):
-        def process_fbx_files(a_path, b_path):
+        def process_fbx_files(a_path_MAT, b_path_MAT):
             pattern = re.compile(r"\.\d{3}$")
-            os.makedirs(b_path, exist_ok=True)
+            os.makedirs(b_path_MAT, exist_ok=True)
             purge_unused_data()
 
-            for fbx_name in [f for f in os.listdir(a_path) if f.lower().endswith(".fbx")]:
+            for fbx_name in [f for f in os.listdir(a_path_MAT) if f.lower().endswith(".fbx")]:
 
-                input_path = os.path.join(a_path, fbx_name)
-                output_path = os.path.join(b_path, fbx_name)
+                input_path = os.path.join(a_path_MAT, fbx_name)
+                output_path = os.path.join(b_path_MAT, fbx_name)
                 
                 bpy.ops.import_scene.fbx(filepath=input_path)
                 
@@ -429,8 +590,8 @@ class MATERIAL_OT_ProcessMaterials(Operator):
 
         try:
             process_fbx_files(
-                bpy.path.abspath(context.scene.a_path),
-                bpy.path.abspath(context.scene.b_path)
+                bpy.path.abspath(context.scene.a_path_MAT),
+                bpy.path.abspath(context.scene.b_path_MAT)
             )
             self.report({'INFO'}, "处理完成!")
             return {'FINISHED'}
@@ -451,8 +612,8 @@ class MATERIAL_PT_Panel(Panel):
         scene = context.scene
         
         box = layout.box()
-        box.prop(scene, "a_path", text="输入目录")
-        box.prop(scene, "b_path", text="输出目录")
+        box.prop(scene, "a_path_MAT", text="输入目录")
+        box.prop(scene, "b_path_MAT", text="输出目录")
         
         box.operator("material.process_materials", icon='MODIFIER')
 
@@ -471,8 +632,10 @@ def register():
 #        TEXTURE_OT_ClearScene,
         TEXTURE_OT_ConnectTextures,
         TEXTURE_PT_Panel,
+        TEXTURE_OT_DisconnectTextures,
         MATERIAL_OT_ProcessMaterials,
         MATERIAL_PT_Panel,
+        
 
     )
     for cls in classes:
@@ -480,12 +643,12 @@ def register():
 
     # 场景属性
     scene = bpy.types.Scene
-    scene.a_folder = StringProperty(
+    scene.a_folder_UV = StringProperty(
         name="输入目录",
         description="UV处理输入文件夹",
         subtype='DIR_PATH'
     )
-    scene.b_folder = StringProperty(
+    scene.b_folder_UV = StringProperty(
         name="输出目录",
         description="UV处理输出文件夹",
         subtype='DIR_PATH'
@@ -502,23 +665,80 @@ def register():
         default="T_Glass_Clear_White_001",
         description="需要处理的材质名称"
     )
-    scene.c_path = StringProperty(
+    scene.c_path_TEX = StringProperty(
         name="贴图路径",
         default="D:/puyuntao/archi/UV_edit_Building_Assets/textures_original",
         subtype='DIR_PATH',
         description="材质贴图存储目录"
     )
-    scene.a_path = StringProperty(
+    scene.a_path_MAT = StringProperty(
         name="输入路径",
         default="D:/puyuntao/archi/UV_edit_Building_Assets/UVOK",
         subtype='DIR_PATH',
         description="材质处理输入目录"
     )
-    scene.b_path = StringProperty(
+    scene.b_path_MAT = StringProperty(
         name="输出路径",
         default="D:/puyuntao/archi/UV_edit_Building_Assets/output",
         subtype='DIR_PATH',
         description="材质处理输出目录"
+    )
+
+    # 添加贴图类型选择属性
+    scene = bpy.types.Scene
+    scene.connect_basecolor = bpy.props.BoolProperty(
+        name="连接BaseColor",
+        default=True,
+        description="是否连接BaseColor贴图"
+    )
+    scene.connect_metallic = bpy.props.BoolProperty(
+        name="连接Metallic",
+        default=True,
+        description="是否连接Metallic贴图"
+    )
+    scene.connect_roughness = bpy.props.BoolProperty(
+        name="连接Roughness",
+        default=True,
+        description="是否连接Roughness贴图"
+    )
+    scene.connect_normal = bpy.props.BoolProperty(
+        name="连接Normal",
+        default=True,
+        description="是否连接Normal贴图"
+    )
+
+    # 添加断开贴图属性
+    scene = bpy.types.Scene
+    scene.d_path_TEX = bpy.props.StringProperty(
+        name="输入路径",
+        subtype='DIR_PATH',
+        description="断连贴图输入目录"
+    )
+    scene.e_path_TEX = bpy.props.StringProperty(
+        name="输出路径",
+        subtype='DIR_PATH',
+        description="断连贴图输出目录"
+    )
+    scene.disconnect_basecolor = bpy.props.BoolProperty(
+        name="断开BaseColor",
+        default=True
+    )
+    scene.disconnect_metallic = bpy.props.BoolProperty(
+        name="断开Metallic",
+        default=True
+    )
+    scene.disconnect_roughness = bpy.props.BoolProperty(
+        name="断开Roughness",
+        default=True
+    )
+    scene.disconnect_normal = bpy.props.BoolProperty(
+        name="断开Normal",
+        default=True
+    )
+    scene.disconnect_alpha = bpy.props.BoolProperty(
+        name="断开Alpha",
+        default=True,
+        description="断开Alpha贴图并设置值为1"
     )
 
 def unregister():
@@ -535,6 +755,7 @@ def unregister():
  #        TEXTURE_OT_ClearScene,
         TEXTURE_OT_ConnectTextures,
         TEXTURE_PT_Panel,
+        TEXTURE_OT_DisconnectTextures,
         MATERIAL_OT_ProcessMaterials,
         MATERIAL_PT_Panel,
 
@@ -544,13 +765,30 @@ def unregister():
 
     # 删除属性
     scene = bpy.types.Scene
-    del scene.a_folder
-    del scene.b_folder
+    del scene.a_folder_UV
+    del scene.b_folder_UV
     del scene.project_scale
     del scene.target_material_name
-    del scene.c_path
-    del scene.a_path
-    del scene.b_path
+    del scene.c_path_TEX
+    del scene.a_path_MAT
+    del scene.b_path_MAT
+    
+    # 删除新增属性
+    scene = bpy.types.Scene
+    del scene.connect_basecolor
+    del scene.connect_metallic
+    del scene.connect_roughness
+    del scene.connect_normal
+
+    # 删除贴图断连属性
+    scene = bpy.types.Scene
+    del scene.d_path_TEX
+    del scene.e_path_TEX
+    del scene.disconnect_basecolor
+    del scene.disconnect_metallic 
+    del scene.disconnect_roughness
+    del scene.disconnect_normal
+    del scene.disconnect_alpha
 
 if __name__ == "__main__":
     register()
