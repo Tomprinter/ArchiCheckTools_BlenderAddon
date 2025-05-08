@@ -7,18 +7,18 @@ from bpy.types import Operator, Panel
 from bpy.props import StringProperty, FloatProperty
 
 bl_info = {
-    "name": "建筑模型检修工具1.2",
+    "name": "建筑模型检修工具1.3",
     "author": "蒲贇涛",
-    "version": (1, 2),
+    "version": (1, 3),
     "blender": (4, 4, 0),
     "location": "3D视图 > 工具面板",
     "description": "https://github.com/Tomprinter/ArchiCheckTools_BlenderAddon",
-    "category": "工具"
+    "category": "工具",
 }
 
 # ==================== 通用工具函数 ====================
 def clear_scene_data(purge_orphans=True):
-    """安全清空场景数据"""
+    """清空场景数据"""
     # 删除所有物体
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=True)
@@ -36,6 +36,114 @@ def clear_scene_data(purge_orphans=True):
     if purge_orphans:
         for _ in range(3):
             bpy.ops.outliner.orphans_purge(do_recursive=True)
+
+
+def purge_unused_data():
+    """清理所有未使用的数据块"""
+#删除所有物体
+#    bpy.ops.object.select_all(action='SELECT')
+#    bpy.ops.object.delete(use_global=True)
+
+    # 定义需要清理的数据类型
+    data_types = [
+        'materials', 'textures',
+        'images', 'brushes', 'particles',
+        'actions', 'fonts', 'node_groups',
+        'armatures', 'curves', 'lattices',
+        'metaballs', 'grease_pencils', 'cameras',
+        'speakers', 'lights', 'lightprobes',
+        'collections', 'worlds'
+    ]
+
+    # 遍历所有数据类型
+    for data_type in data_types:
+        data_collection = getattr(bpy.data, data_type)
+        # 创建列表避免在遍历时修改集合
+        for item in list(data_collection):
+            if item.users == 0:
+                try:
+                    data_collection.remove(item)
+                except Exception as e:
+                    print(f"Error removing {data_type}: {item.name} - {str(e)}")
+
+    # 执行Blender内置的孤立数据清理（推荐方式）
+    for _ in range(3):
+        bpy.ops.outliner.orphans_purge(do_recursive=True)
+
+
+# ==================== 新增基础功能面板 ====================
+class BASE_OT_ClearScene(Operator):
+    """清空场景"""
+    bl_idname = "base.clear_scene"
+    bl_label = "清空场景"
+    
+    def execute(self, context):
+        clear_scene_data()
+        return {'FINISHED'}
+
+class BASE_OT_ImportFBX(Operator):
+    """导入FBX文件"""
+    bl_idname = "base.import_fbx"
+    bl_label = "导入FBX"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    filepath: StringProperty(subtype='FILE_PATH')
+    
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+    
+    def execute(self, context):
+        bpy.ops.import_scene.fbx(filepath=self.filepath)
+        return {'FINISHED'}
+
+class BASE_OT_ProtectMaterials(Operator):
+    """保护所有材质贴图"""
+    bl_idname = "base.protect_materials"
+    bl_label = "保护材质贴图"
+    
+    def execute(self, context):
+        # 保护材质
+        for mat in bpy.data.materials:
+            mat.use_fake_user = True
+        # 保护贴图
+        for tex in bpy.data.textures:
+            tex.use_fake_user = True
+        # 保护图像
+        for img in bpy.data.images:
+            img.use_fake_user = True
+        self.report({'INFO'}, "所有材质和贴图已保护")
+        return {'FINISHED'}
+
+class BASE_OT_PurgeUnused(Operator):
+    """清理未使用数据"""
+    bl_idname = "base.purge_unused"
+    bl_label = "清理未使用数据"
+    
+    def execute(self, context):
+        purge_unused_data()
+        return {'FINISHED'}
+
+class BASE_PT_Panel(Panel):
+    bl_label = "基础功能"
+    bl_idname = "VIEW3D_PT_base_tools"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "综合工具"
+
+
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box.label(text="场景管理", icon='WORLD')
+        box.operator("base.clear_scene", icon='TRASH')
+        box.operator("base.import_fbx", icon='IMPORT')
+        
+        box = layout.box()
+        box.label(text="数据保护", icon='MATERIAL')
+        box.operator("base.protect_materials", text="保护材质贴图")
+        box.operator("base.purge_unused", text="清理未使用数据")
+
 
 # ==================== 1. UV处理工具 ====================
 class UVTOOLS_OT_BatchProcess(Operator):
@@ -130,6 +238,7 @@ class UVTOOLS_PT_Panel(Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "综合工具"
+
 
     def draw(self, context):
         layout = self.layout
@@ -236,71 +345,14 @@ class TEXTURE_OT_ConnectTextures(Operator):
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
 
-class TEXTURE_OT_ConnectTextures(Operator):
-    bl_idname = "texture.connect_textures"
-    bl_label = "连接材质贴图"
-    bl_description = "自动连接Metallic/Roughness/Normal贴图"
-
-    def execute(self, context):
-        def connect_textures(c_path):
-            valid_ext = {'.png', '.jpg', '.jpeg', '.tga', '.tif', '.tiff'}
-            for mat in bpy.data.materials:
-                if not mat.use_nodes:
-                    continue
-                
-                principled = next((n for n in mat.node_tree.nodes 
-                                 if isinstance(n, bpy.types.ShaderNodeBsdfPrincipled)), None)
-                if not principled:
-                    continue
-
-                for suffix, input_name, is_normal in [
-                    ('Metallic', 'Metallic', False),
-                    ('Roughness', 'Roughness', False),
-                    ('Normal', 'Normal', True)
-                ]:
-                    tex_path = None
-                    base_name = f"{mat.name}_{suffix}"
-                    
-                    for f in os.listdir(c_path):
-                        if f.startswith(base_name) and os.path.splitext(f)[1].lower() in valid_ext:
-                            tex_path = os.path.join(c_path, f)
-                            break
-                    
-                    if tex_path:
-                        tex_image = mat.node_tree.nodes.new('ShaderNodeTexImage')
-                        tex_image.image = bpy.data.images.load(tex_path)
-                        
-                        if is_normal:
-                            tex_image.image.colorspace_settings.name = 'Non-Color'
-                            normal_node = mat.node_tree.nodes.new('ShaderNodeNormalMap')
-                            mat.node_tree.links.new(
-                                tex_image.outputs['Color'],
-                                normal_node.inputs['Color']
-                            )
-                            mat.node_tree.links.new(
-                                normal_node.outputs['Normal'],
-                                principled.inputs[input_name]
-                            )
-                        else:
-                            mat.node_tree.links.new(
-                                tex_image.outputs['Color'],
-                                principled.inputs[input_name]
-                            )
-
-        try:
-            connect_textures(bpy.path.abspath(context.scene.c_path))
-            self.report({'INFO'}, "贴图连接完成!")
-            return {'FINISHED'}
-        except Exception as e:
-            self.report({'ERROR'}, str(e))
-            return {'CANCELLED'}
 
 class TEXTURE_PT_Panel(Panel):
-    bl_label = "2贴图查找"
+    bl_label = "2.贴图查找"
     bl_idname = "VIEW3D_PT_texture_tools"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "综合工具"
+
 
     def draw(self, context):
         layout = self.layout
@@ -312,9 +364,7 @@ class TEXTURE_PT_Panel(Panel):
         
         # 操作按钮列
         col = box.column(align=True)
-#        col.operator("texture.import_fbx", icon='IMPORT')
         col.operator("texture.connect_textures", icon='MATERIAL')
-#        col.operator("texture.clear_scene", icon='TRASH')
 
 # ==================== 3. 材质处理工具 ====================
 class MATERIAL_OT_ProcessMaterials(Operator):
@@ -325,9 +375,10 @@ class MATERIAL_OT_ProcessMaterials(Operator):
         def process_fbx_files(a_path, b_path):
             pattern = re.compile(r"\.\d{3}$")
             os.makedirs(b_path, exist_ok=True)
-            
+            purge_unused_data()
+
             for fbx_name in [f for f in os.listdir(a_path) if f.lower().endswith(".fbx")]:
-                clear_scene_data()
+
                 input_path = os.path.join(a_path, fbx_name)
                 output_path = os.path.join(b_path, fbx_name)
                 
@@ -374,7 +425,7 @@ class MATERIAL_OT_ProcessMaterials(Operator):
                     embed_textures=True,
                     path_mode='COPY', 
                 )
-                clear_scene_data()
+                purge_unused_data()
 
         try:
             process_fbx_files(
@@ -394,6 +445,7 @@ class MATERIAL_PT_Panel(Panel):
     bl_region_type = 'UI'
     bl_category = "综合工具"
 
+
     def draw(self, context):
         layout = self.layout
         scene = context.scene
@@ -408,6 +460,11 @@ class MATERIAL_PT_Panel(Panel):
 def register():
     # 注册所有类
     classes = (
+        BASE_OT_ClearScene,
+        BASE_OT_ImportFBX,
+        BASE_OT_ProtectMaterials,
+        BASE_OT_PurgeUnused,
+        BASE_PT_Panel,
         UVTOOLS_OT_BatchProcess,
         UVTOOLS_PT_Panel,
 #        TEXTURE_OT_ImportFBX,
@@ -416,6 +473,7 @@ def register():
         TEXTURE_PT_Panel,
         MATERIAL_OT_ProcessMaterials,
         MATERIAL_PT_Panel,
+
     )
     for cls in classes:
         bpy.utils.register_class(cls)
@@ -466,6 +524,11 @@ def register():
 def unregister():
     # 注销所有类
     classes = (
+        BASE_OT_ClearScene,
+        BASE_OT_ImportFBX,
+        BASE_OT_ProtectMaterials,
+        BASE_OT_PurgeUnused,
+        BASE_PT_Panel,
         UVTOOLS_OT_BatchProcess,
         UVTOOLS_PT_Panel,
  #        TEXTURE_OT_ImportFBX,
@@ -474,6 +537,7 @@ def unregister():
         TEXTURE_PT_Panel,
         MATERIAL_OT_ProcessMaterials,
         MATERIAL_PT_Panel,
+
     )
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
