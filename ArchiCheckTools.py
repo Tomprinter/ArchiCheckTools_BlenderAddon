@@ -87,7 +87,7 @@ class BASE_OT_ImportFBX(Operator):
     bl_label = "导入FBX"
     bl_options = {'REGISTER', 'UNDO'}
     
-    filepath: StringProperty(subtype='FILe_path_TEX')
+    filepath: StringProperty(subtype='FILE_PATH')
     
     def invoke(self, context, event):
         context.window_manager.fileselect_add(self)
